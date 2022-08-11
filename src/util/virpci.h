@@ -280,6 +280,9 @@ int virPCIDeviceRebind(virPCIDevice *dev);
 int virPCIDeviceGetDriverPathAndName(virPCIDevice *dev,
                                      char **path,
                                      char **name);
+int virPCIDeviceGetDriverNameAndType(virPCIDevice *dev,
+                                     char **drvName,
+                                     virPCIStubDriver *drvType);
 
 int virPCIDeviceIsPCIExpress(virPCIDevice *dev);
 int virPCIDeviceHasPCIExpressLink(virPCIDevice *dev);

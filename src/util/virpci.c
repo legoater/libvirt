@@ -277,6 +277,71 @@ virPCIDeviceGetDriverPathAndName(virPCIDevice *dev, char **path, char **name)
 }
 
 
+/**
+ * virPCIDeviceGetDriverNameAndType:
+ * @dev: virPCIDevice object to examine
+ * @drvName: returns name of driver bound to this device (if any)
+ * @drvType: returns type of driver if it is a known stub driver type
+ *
+ * Find the name of the driver bound to @dev (if any) and the type of
+ * the driver if it is a known/recognized "stub" driver (based on the
+ * driver name).
+ *
+ * There are vfio "variant" drivers that provide all the basic
+ * functionality of the standard vfio-pci driver as well as additional
+ * stuff. There is a plan to add info to sysfs that will allow easily
+ * determining if a driver is a vfio variant driver, but that sysfs
+ * entry isn't yet available. In the meantime as a workaround so that
+ * the few existing vfio variant drivers can be used with libvirt, and
+ * so that driver developers can test their new vfio variant drivers
+ * without needing to bypass libvirt, we also check if the driver name
+ * contains the string "vfio"; if it does, then we consider this drier
+ * as type VFIO. This can lead to false positives, but that isn't a
+ * horrible thing, because the problem will still be caught by QEMU as
+ * soon as libvirt makes the request to attach the device.
+ *
+ * Return 0 on success, -1 on failure. If -1 is returned, then an error
+ * message has been logged.
+ */
+int
+virPCIDeviceGetDriverNameAndType(virPCIDevice *dev,
+                                 char **drvName,
+                                 virPCIStubDriver *drvType)
+{
+    g_autofree char *drvPath = NULL;
+    int tmpType;
+
+    if (virPCIDeviceGetDriverPathAndName(dev, &drvPath, drvName) < 0)
+        return -1;
+
+    if (!*drvName) {
+        *drvType = VIR_PCI_STUB_DRIVER_NONE;
+        return 0;
+    }
+
+    tmpType = virPCIStubDriverTypeFromString(*drvName);
+
+    if (tmpType > VIR_PCI_STUB_DRIVER_NONE) {
+        *drvType = tmpType;
+        return 0; /* exact match of a known driver name (or no name) */
+    }
+
+    /* Check if the drivername contains "vfio" and count as a VFIO
+     * driver if so - see above for explanation.
+     */
+
+    if (strstr(*drvName, "vfio")) {
+        VIR_DEBUG("Driver %s is a vfio_pci driver", *drvName);
+        *drvType = VIR_PCI_STUB_DRIVER_VFIO;
+    } else {
+        VIR_DEBUG("Driver %s is NOT a vfio_pci driver", *drvName);
+        *drvType = VIR_PCI_STUB_DRIVER_NONE;
+    }
+
+    return 0;
+}
+
+
 static int
 virPCIDeviceConfigOpenInternal(virPCIDevice *dev, bool readonly, bool fatal)
 {
@@ -1004,8 +1069,8 @@ virPCIDeviceReset(virPCIDevice *dev,
                   virPCIDeviceList *activeDevs,
                   virPCIDeviceList *inactiveDevs)
 {
-    g_autofree char *drvPath = NULL;
     g_autofree char *drvName = NULL;
+    virPCIStubDriver drvType;
     int ret = -1;
     int fd = -1;
     int hdrType = -1;
@@ -1031,15 +1096,16 @@ virPCIDeviceReset(virPCIDevice *dev,
      * reset it whenever appropriate, so doing it ourselves would just
      * be redundant.
      */
-    if (virPCIDeviceGetDriverPathAndName(dev, &drvPath, &drvName) < 0)
+    if (virPCIDeviceGetDriverNameAndType(dev, &drvName, &drvType) < 0)
         goto cleanup;
 
-    if (virPCIStubDriverTypeFromString(drvName) == VIR_PCI_STUB_DRIVER_VFIO) {
-        VIR_DEBUG("Device %s is bound to vfio-pci - skip reset",
-                  dev->name);
+    if (drvType == VIR_PCI_STUB_DRIVER_VFIO) {
+
+        VIR_DEBUG("Device %s is bound to %s - skip reset", dev->name, drvName);
         ret = 0;
         goto cleanup;
     }
+
     VIR_DEBUG("Resetting device %s", dev->name);
 
     if ((fd = virPCIDeviceConfigOpenWrite(dev)) < 0)
